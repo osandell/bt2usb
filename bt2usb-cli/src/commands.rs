@@ -751,6 +751,17 @@ pub fn cmd_restart(transport: &mut Transport) -> Result<()> {
     Ok(())
 }
 
+pub fn cmd_bootloader(transport: &mut Transport) -> Result<()> {
+    println!("{}", "Rebooting into the USB bootloader...".cyan());
+    let (resp, _) = transport.request_simple(CMD_REBOOT_BOOTLOADER, DEFAULT_TIMEOUT)?;
+    check_ok(&resp)?;
+    println!(
+        "{}",
+        "Device will reappear as the RPI-RP2 drive, ready for a UF2.".green()
+    );
+    Ok(())
+}
+
 pub fn cmd_reprobe(transport: &mut Transport) -> Result<()> {
     println!(
         "{}",

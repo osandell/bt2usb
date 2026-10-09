@@ -520,11 +520,12 @@ async fn connection_manager_loop<
                         // Disconnect a specific device — check BLE slots then Classic
                         if let Some(slot) = slots::find_slot_by_address(&addr) {
                             let _ = SLOT_CMD_CHANNELS[slot].try_send(SlotCommand::Disconnect);
-                        } else if slots::is_classic_connected()
-                            && slots::get_classic_address() == addr
-                        {
-                            let _ = CLASSIC_CMD_CHANNEL
-                                .try_send(crate::ble_state::ClassicCommand::Disconnect);
+                        } else if slots::find_classic_link_by_address(&addr).is_some() {
+                            let _ = CLASSIC_CMD_CHANNEL.try_send(
+                                crate::ble_state::ClassicCommand::Disconnect {
+                                    address: Some(addr),
+                                },
+                            );
                         } else {
                             info!("[manager] Device {:?} not connected", addr);
                         }
@@ -537,9 +538,10 @@ async fn connection_manager_loop<
                             }
                         }
                         // Disconnect Classic if connected
-                        if slots::is_classic_connected() {
-                            let _ = CLASSIC_CMD_CHANNEL
-                                .try_send(crate::ble_state::ClassicCommand::Disconnect);
+                        if slots::any_classic_connected() {
+                            let _ = CLASSIC_CMD_CHANNEL.try_send(
+                                crate::ble_state::ClassicCommand::Disconnect { address: None },
+                            );
                         }
                     }
                 }
@@ -670,6 +672,10 @@ async fn connection_manager_loop<
 
             BleCommand::Restart => {
                 commands::handle_restart().await;
+            }
+
+            BleCommand::RebootBootloader => {
+                commands::handle_reboot_bootloader().await;
             }
 
             BleCommand::FactoryReset => {

@@ -298,7 +298,7 @@ async fn dispatch_request(
                 }
                 Err(_) => {
                     // Timeout - use defaults
-                    let empty_devs = [None, None, None, None];
+                    let empty_devs = [const { None }; crate::ble_state::MAX_REPORTED_DEVICES];
                     protocol::encode_response_status(
                         cbor_buf,
                         last_state,
@@ -526,6 +526,11 @@ async fn dispatch_request(
 
         protocol::Request::Restart => {
             let _ = BLE_CMD_CHANNEL.try_send(BleCommand::Restart);
+            protocol::encode_response_ok(cbor_buf).unwrap_or(0)
+        }
+
+        protocol::Request::RebootBootloader => {
+            let _ = BLE_CMD_CHANNEL.try_send(BleCommand::RebootBootloader);
             protocol::encode_response_ok(cbor_buf).unwrap_or(0)
         }
 

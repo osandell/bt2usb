@@ -205,6 +205,9 @@ enum Command {
     /// Restart the device
     Restart,
 
+    /// Reboot into the USB bootloader (BOOTSEL mode) to flash new firmware
+    Bootloader,
+
     /// Force re-probe the host OS (resets device into probe mode)
     Reprobe,
 
@@ -317,6 +320,7 @@ fn main() -> Result<()> {
         Command::Version => cmd_version(&mut transport),
         Command::HidActivity { watch } => cmd_hid_activity(&mut transport, watch),
         Command::Restart => cmd_restart(&mut transport),
+        Command::Bootloader => cmd_bootloader(&mut transport),
         Command::Reprobe => cmd_reprobe(&mut transport),
         Command::SetOs { os } => cmd_set_os(&mut transport, &os),
     }

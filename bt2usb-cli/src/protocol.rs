@@ -54,6 +54,7 @@ pub const CMD_SET_AUTO_CONNECT: u8 = 22;
 pub const CMD_CLEAR_BOND: u8 = 23;
 pub const CMD_FACTORY_RESET: u8 = 24;
 pub const CMD_GET_HID_ACTIVITY: u8 = 27;
+pub const CMD_REBOOT_BOOTLOADER: u8 = 28;
 
 // ============ Response IDs ============
 

@@ -41,7 +41,7 @@ pub mod pairing;
 pub use connection::{ClassicConnection, ConnState};
 pub use error::Error;
 pub use hidp::{HidClient, HidReport};
-pub use host::{ClassicRunner, ConnEvent, HostResources};
+pub use host::{ClassicRunner, ConnEvent, HostResources, LinkEvent};
 pub use l2cap::L2capState;
 pub use link_key::{LinkKeyInfo, LinkKeyStore};
 pub use pairing::{PairingCallback, PairingContext, PairingEvent};

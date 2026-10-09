@@ -49,6 +49,8 @@ pub enum BleCommand {
     },
     /// Restart the system.
     Restart,
+    /// Reboot into the USB bootloader so new firmware can be copied over.
+    RebootBootloader,
     /// Set a configuration value and persist to flash.
     SetConfig { key: u8, value: u32 },
     /// Set forced OS override (0=Auto, 1-3=forced) and persist to flash.
@@ -138,8 +140,8 @@ impl TransportType {
 pub enum ClassicCommand {
     /// Connect to a specific Classic BT device by address.
     Connect { address: [u8; 6] },
-    /// Disconnect the active Classic BT connection.
-    Disconnect,
+    /// Disconnect one Classic BT link by address, or all of them with `None`.
+    Disconnect { address: Option<[u8; 6]> },
     /// Start Classic Inquiry scan.
     Scan,
     /// Stop active Inquiry scan.
@@ -175,6 +177,10 @@ pub struct ConnectedDeviceInfo {
     pub transport_type: TransportType,
 }
 
+/// Devices a status report can list: every BLE slot plus every Classic link.
+pub const MAX_REPORTED_DEVICES: usize =
+    crate::ble::slots::MAX_CONNECTIONS + crate::ble::slots::MAX_CLASSIC_LINKS;
+
 /// Status information response
 #[derive(Clone, Debug, defmt::Format)]
 pub struct StatusInfo {
@@ -186,8 +192,8 @@ pub struct StatusInfo {
     pub battery_level: u8,
     /// Number of currently connected devices.
     pub connected_count: u8,
-    /// Per-device connection info (up to 3 BLE + 1 Classic).
-    pub connected_devices: [Option<ConnectedDeviceInfo>; 4],
+    /// Per-device connection info (BLE slots, then Classic links).
+    pub connected_devices: [Option<ConnectedDeviceInfo>; MAX_REPORTED_DEVICES],
 }
 
 /// Response channel for GetStatus (capacity 1, only one request at a time).

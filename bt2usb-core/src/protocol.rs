@@ -66,6 +66,7 @@ pub const CMD_FACTORY_RESET: u8 = 24;
 pub const CMD_CLASSIC_SCAN: u8 = 25;
 pub const CMD_CLASSIC_SCAN_STOP: u8 = 26;
 pub const CMD_GET_HID_ACTIVITY: u8 = 27;
+pub const CMD_REBOOT_BOOTLOADER: u8 = 28;
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -134,6 +135,8 @@ pub enum Request {
     FactoryReset,
     /// Get per-interface HID write activity counters (debug instrumentation).
     GetHidActivity,
+    /// Reboot into the RP2040 USB bootloader (BOOTSEL mode) for flashing.
+    RebootBootloader,
 }
 
 // ============ Response (device -> host) ============
@@ -351,6 +354,7 @@ pub fn decode_request(cbor: &[u8]) -> Result<Request, ProtocolError> {
         CMD_CLASSIC_SCAN => Ok(Request::ClassicScan),
         CMD_CLASSIC_SCAN_STOP => Ok(Request::ClassicScanStop),
         CMD_GET_HID_ACTIVITY => Ok(Request::GetHidActivity),
+        CMD_REBOOT_BOOTLOADER => Ok(Request::RebootBootloader),
         _ => Err(ProtocolError::UnknownCommand(cmd_id)),
     }
 }
@@ -402,7 +406,7 @@ pub fn encode_response_status(
     battery_level: u8,
     detected_os: u8,
     connected_count: u8,
-    connected_devices: &[Option<ConnectedDevice>; 4],
+    connected_devices: &[Option<ConnectedDevice>],
 ) -> EncResult {
     cbor_encode(buf, |e| {
         e.array(10)

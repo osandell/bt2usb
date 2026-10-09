@@ -157,43 +157,54 @@ pub static SLOT_CMD_CHANNELS: [Channel<CriticalSectionRawMutex, SlotCommand, 2>;
 
 // ============ Classic BT Connection State ============
 
-/// Classic BT connection state (single device for now).
-static CLASSIC_STATE: AtomicU8 = AtomicU8::new(0); // 0=Idle, 2=Connected
-static CLASSIC_ADDR_BYTES: [AtomicU8; 6] = [
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-    AtomicU8::new(0),
-];
-pub static CLASSIC_PROFILE: AtomicU8 = AtomicU8::new(0);
+/// Maximum concurrent Classic BT links (e.g. a Magic Trackpad and a keyboard).
+pub const MAX_CLASSIC_LINKS: usize = 2;
 
-pub fn set_classic_connected(addr: &[u8; 6], profile_id: u8) {
+/// Slot index reported for Classic link `link` in status and HID events.
+/// The BLE slots come first, at 0..MAX_CONNECTIONS.
+pub const fn classic_slot_index(link: usize) -> u8 {
+    (MAX_CONNECTIONS + link) as u8
+}
+
+/// Per-link Classic BT connection state (0=Idle, 2=Connected).
+static CLASSIC_STATES: [AtomicU8; MAX_CLASSIC_LINKS] = [const { AtomicU8::new(SLOT_IDLE) }; MAX_CLASSIC_LINKS];
+static CLASSIC_ADDR_BYTES: [AtomicU8; 6 * MAX_CLASSIC_LINKS] =
+    [const { AtomicU8::new(0) }; 6 * MAX_CLASSIC_LINKS];
+pub static CLASSIC_PROFILES: [AtomicU8; MAX_CLASSIC_LINKS] = [const { AtomicU8::new(0) }; MAX_CLASSIC_LINKS];
+
+pub fn set_classic_connected(link: usize, addr: &[u8; 6], profile_id: u8) {
     for i in 0..6 {
-        CLASSIC_ADDR_BYTES[i].store(addr[i], Ordering::Relaxed);
+        CLASSIC_ADDR_BYTES[link * 6 + i].store(addr[i], Ordering::Relaxed);
     }
-    CLASSIC_PROFILE.store(profile_id, Ordering::Relaxed);
-    CLASSIC_STATE.store(SLOT_CONNECTED, Ordering::Relaxed);
+    CLASSIC_PROFILES[link].store(profile_id, Ordering::Relaxed);
+    CLASSIC_STATES[link].store(SLOT_CONNECTED, Ordering::Relaxed);
 }
 
-#[allow(dead_code)]
-pub fn set_classic_disconnected() {
-    CLASSIC_STATE.store(SLOT_IDLE, Ordering::Relaxed);
-    for byte in &CLASSIC_ADDR_BYTES {
-        byte.store(0, Ordering::Relaxed);
+pub fn set_classic_disconnected(link: usize) {
+    CLASSIC_STATES[link].store(SLOT_IDLE, Ordering::Relaxed);
+    for i in 0..6 {
+        CLASSIC_ADDR_BYTES[link * 6 + i].store(0, Ordering::Relaxed);
     }
-    CLASSIC_PROFILE.store(0, Ordering::Relaxed);
+    CLASSIC_PROFILES[link].store(0, Ordering::Relaxed);
 }
 
-pub fn is_classic_connected() -> bool {
-    CLASSIC_STATE.load(Ordering::Relaxed) == SLOT_CONNECTED
+pub fn is_classic_connected(link: usize) -> bool {
+    CLASSIC_STATES[link].load(Ordering::Relaxed) == SLOT_CONNECTED
 }
 
-pub fn get_classic_address() -> [u8; 6] {
+pub fn any_classic_connected() -> bool {
+    (0..MAX_CLASSIC_LINKS).any(is_classic_connected)
+}
+
+pub fn get_classic_address(link: usize) -> [u8; 6] {
     let mut addr = [0u8; 6];
     for i in 0..6 {
-        addr[i] = CLASSIC_ADDR_BYTES[i].load(Ordering::Relaxed);
+        addr[i] = CLASSIC_ADDR_BYTES[link * 6 + i].load(Ordering::Relaxed);
     }
     addr
+}
+
+/// The connected Classic link with this address, if any.
+pub fn find_classic_link_by_address(addr: &[u8; 6]) -> Option<usize> {
+    (0..MAX_CLASSIC_LINKS).find(|&l| is_classic_connected(l) && get_classic_address(l) == *addr)
 }

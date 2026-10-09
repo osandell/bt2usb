@@ -43,9 +43,10 @@ pub static BATTERY_LEVELS: [AtomicU8; MAX_CONNECTIONS] = [
 /// Used for backward compatibility with single-device status reporting.
 pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
 
-/// Battery level for the Classic BT slot (e.g. Magic Trackpad 2).
+/// Battery level per Classic BT link (e.g. Magic Trackpad 2).
 /// Reported via HIDP GET_REPORT(Input, 0x90) — see ble/classic.rs.
-pub static CLASSIC_BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
+pub static CLASSIC_BATTERY_LEVELS: [AtomicU8; crate::ble::slots::MAX_CLASSIC_LINKS] =
+    [const { AtomicU8::new(0xFF) }; crate::ble::slots::MAX_CLASSIC_LINKS];
 
 /// Signal from BLE (Core 0) to USB battery task (Core 1).
 /// Signaled with the new battery level (0-100) whenever it changes.
@@ -63,9 +64,11 @@ fn refresh_aggregate() {
             min = l;
         }
     }
-    let classic = CLASSIC_BATTERY_LEVEL.load(Relaxed);
-    if classic != 0xFF && classic < min {
-        min = classic;
+    for bl in &CLASSIC_BATTERY_LEVELS {
+        let l = bl.load(Relaxed);
+        if l != 0xFF && l < min {
+            min = l;
+        }
     }
     BATTERY_LEVEL.store(min, Relaxed);
     BATTERY_USB_SIGNAL.signal(min);
@@ -83,16 +86,16 @@ pub fn clear_battery_level(slot: usize) {
     update_battery_level(slot, 0xFF);
 }
 
-/// Update the Classic BT battery level and refresh the aggregate.
-pub fn update_classic_battery_level(level: u8) {
+/// Update a Classic BT link's battery level and refresh the aggregate.
+pub fn update_classic_battery_level(link: usize, level: u8) {
     use core::sync::atomic::Ordering::Relaxed;
-    CLASSIC_BATTERY_LEVEL.store(level, Relaxed);
+    CLASSIC_BATTERY_LEVELS[link].store(level, Relaxed);
     refresh_aggregate();
 }
 
-/// Clear the Classic BT battery level (on disconnect) and refresh.
-pub fn clear_classic_battery_level() {
-    update_classic_battery_level(0xFF);
+/// Clear a Classic BT link's battery level (on disconnect) and refresh.
+pub fn clear_classic_battery_level(link: usize) {
+    update_classic_battery_level(link, 0xFF);
 }
 
 // ============ Per-slot parsed report layouts ============

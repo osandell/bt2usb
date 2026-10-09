@@ -33,9 +33,9 @@ pub fn handle_get_status(
         (false, [0u8; 6])
     };
 
-    // Gather per-slot connection info (BLE slots 0-2 + Classic slot 3)
-    let mut connected_devices: [Option<ble_state::ConnectedDeviceInfo>; 4] =
-        [None, None, None, None];
+    // Gather per-slot connection info (BLE slots first, then Classic links)
+    let mut connected_devices: [Option<ble_state::ConnectedDeviceInfo>; ble_state::MAX_REPORTED_DEVICES] =
+        [const { None }; ble_state::MAX_REPORTED_DEVICES];
     let mut connected_count = 0u8;
     for (i, dev) in connected_devices
         .iter_mut()
@@ -52,15 +52,18 @@ pub fn handle_get_status(
             connected_count += 1;
         }
     }
-    // Classic BT slot
-    if slots::is_classic_connected() {
-        connected_devices[3] = Some(ble_state::ConnectedDeviceInfo {
-            address: slots::get_classic_address(),
-            profile_id: slots::CLASSIC_PROFILE.load(Ordering::Relaxed),
-            battery_level: ble_hid::CLASSIC_BATTERY_LEVEL.load(Ordering::Relaxed),
-            transport_type: ble_state::TransportType::Classic,
-        });
-        connected_count += 1;
+    // Classic BT links
+    for link in 0..slots::MAX_CLASSIC_LINKS {
+        if slots::is_classic_connected(link) {
+            connected_devices[slots::classic_slot_index(link) as usize] =
+                Some(ble_state::ConnectedDeviceInfo {
+                    address: slots::get_classic_address(link),
+                    profile_id: slots::CLASSIC_PROFILES[link].load(Ordering::Relaxed),
+                    battery_level: ble_hid::CLASSIC_BATTERY_LEVELS[link].load(Ordering::Relaxed),
+                    transport_type: ble_state::TransportType::Classic,
+                });
+            connected_count += 1;
+        }
     }
 
     let status = ble_state::StatusInfo {
@@ -382,6 +385,20 @@ pub async fn handle_clear_bond(
 /// Log a restart message and trigger a system reset.
 ///
 /// This function does not return.
+/// Reboot into the RP2040 ROM's USB bootloader (BOOTSEL mode).
+///
+/// The Pico then shows up as the RPI-RP2 mass storage drive, ready for a UF2,
+/// without anyone pressing the BOOTSEL button. That matters when the bridge
+/// sits behind a machine where the button can't be reached.
+pub async fn handle_reboot_bootloader() {
+    info!("Reboot to USB bootloader requested");
+    rpc_log::info("Rebooting into the USB bootloader...");
+    // Give time for log message and RPC response to be sent
+    Timer::after_millis(100).await;
+    // No activity LED pin, all bootloader interfaces (mass storage + PICOBOOT) enabled.
+    embassy_rp::rom_data::reset_to_usb_boot(0, 0);
+}
+
 pub async fn handle_restart() -> ! {
     info!("Manual restart requested");
     rpc_log::info("Restarting device...");
