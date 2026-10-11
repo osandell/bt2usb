@@ -338,8 +338,9 @@ async fn forward_keyboard_report(link: usize, apple: bool, report: &bt_classic_h
         return;
     };
 
-    // macOS reads an Apple keyboard's own codes; every other host expects a
-    // PC keyboard's (Linux fixes them only for one plugged in directly).
+    // macOS reads an Apple keyboard's own codes; every other host expects the
+    // ISO keys where a PC keyboard has them (Linux fixes that only for one
+    // plugged in directly).
     if apple
         && crate::usb_hid::DETECTED_OS.load(Ordering::Relaxed) != crate::usb_hid::OS_MACOS
     {
@@ -373,8 +374,8 @@ struct Link {
     addr: [u8; 6],
     handle: ConnHandle,
     profile: DeviceProfile,
-    /// An Apple keyboard (by its name): its reports are turned into PC
-    /// conventions for a host that is not a Mac (apple_to_pc).
+    /// An Apple keyboard (by its name): its ISO keys are swapped for a host
+    /// that is not a Mac (apple_to_pc).
     apple: bool,
     l2cap: L2capState<4>,
     hid: HidClient,
@@ -1009,7 +1010,7 @@ where
                                 &device_name[..(device_name_len as usize).min(32)],
                             );
                             if apple {
-                                info!("[classic] Apple keyboard: PC conventions for non-Mac hosts");
+                                info!("[classic] Apple keyboard: ISO keys swapped for non-Mac hosts");
                             }
                             let profile = match stored_profile_id {
                                 Some(id) => DeviceProfile::from_id(id),

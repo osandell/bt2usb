@@ -94,40 +94,17 @@ pub fn name_is_apple_keyboard(name: &[u8]) -> bool {
     contains_ci(name, b"Magic Keyboard") || contains_ci(name, b"Apple Wireless Keyboard")
 }
 
-/// Boot keyboard modifier bits: Alt and GUI, left and right.
-const MOD_LALT: u8 = 0x04;
-const MOD_LGUI: u8 = 0x08;
-const MOD_RALT: u8 = 0x40;
-const MOD_RGUI: u8 = 0x80;
-
 /// The ISO keys an Apple keyboard reports the other way round: the key left
 /// of 1 (§ on a Swedish keyboard) and the one right of left Shift (<).
 const KEY_GRAVE: u8 = 0x35;
 const KEY_NON_US_BACKSLASH: u8 = 0x64;
 
-/// Rewrite a boot report from an Apple keyboard into PC conventions, what
-/// Linux's hid_apple does for one plugged in directly (`swap_opt_cmd`,
-/// `iso_layout`) and what a host that is not a Mac expects:
-///
-/// - Option and Command trade places: the key next to the space bar (Cmd)
-///   arrives as Alt, as on a PC keyboard, and Option as the GUI key.
-/// - The ISO keys § and < arrive where a PC keyboard puts them.
+/// Rewrite a boot report from an Apple ISO keyboard for a host that is not a
+/// Mac: § and < arrive where a PC keyboard puts them, what Linux's hid_apple
+/// does for one plugged in directly (`iso_layout`). Option and Command stay
+/// as they are, as hid_apple leaves them by default (`swap_opt_cmd=0`): a
+/// host that wants Command next to the space bar as Alt swaps them itself.
 pub fn apple_to_pc(report: &mut [u8; BOOT_KEYBOARD_REPORT_LEN]) {
-    let m = report[0];
-    let mut out = m & !(MOD_LALT | MOD_LGUI | MOD_RALT | MOD_RGUI);
-    if m & MOD_LALT != 0 {
-        out |= MOD_LGUI;
-    }
-    if m & MOD_LGUI != 0 {
-        out |= MOD_LALT;
-    }
-    if m & MOD_RALT != 0 {
-        out |= MOD_RGUI;
-    }
-    if m & MOD_RGUI != 0 {
-        out |= MOD_RALT;
-    }
-    report[0] = out;
     for key in &mut report[2..] {
         *key = match *key {
             KEY_GRAVE => KEY_NON_US_BACKSLASH,
@@ -151,14 +128,13 @@ mod apple_tests {
     }
 
     #[test]
-    fn swaps_option_command_and_the_iso_keys() {
-        // Left Cmd + right Option held, § and a pressed.
-        let mut r = [MOD_LGUI | MOD_RALT, 0, KEY_GRAVE, 0x04, 0, 0, 0, 0];
+    fn swaps_the_iso_keys_and_leaves_the_modifiers() {
+        // Left Cmd (GUI) + right Option (Alt) held, § and a pressed.
+        let mut r = [0x08 | 0x40, 0, KEY_GRAVE, 0x04, 0, 0, 0, 0];
         apple_to_pc(&mut r);
-        assert_eq!(r, [MOD_LALT | MOD_RGUI, 0, KEY_NON_US_BACKSLASH, 0x04, 0, 0, 0, 0]);
-        // Ctrl and Shift stay where they are; < becomes §.
-        let mut r = [0x01 | 0x02, 0, KEY_NON_US_BACKSLASH, 0, 0, 0, 0, 0];
+        assert_eq!(r, [0x08 | 0x40, 0, KEY_NON_US_BACKSLASH, 0x04, 0, 0, 0, 0]);
+        let mut r = [0, 0, KEY_NON_US_BACKSLASH, 0, 0, 0, 0, 0];
         apple_to_pc(&mut r);
-        assert_eq!(r, [0x01 | 0x02, 0, KEY_GRAVE, 0, 0, 0, 0, 0]);
+        assert_eq!(r, [0, 0, KEY_GRAVE, 0, 0, 0, 0, 0]);
     }
 }
