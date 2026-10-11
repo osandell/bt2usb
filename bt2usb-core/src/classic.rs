@@ -83,3 +83,82 @@ pub fn translate_keyboard_report(data: &[u8]) -> Option<[u8; BOOT_KEYBOARD_REPOR
     out[2..].copy_from_slice(&body[2..BOOT_KEYBOARD_REPORT_LEN]);
     Some(out)
 }
+
+/// Whether a Bluetooth device name is an Apple keyboard's. Apple keyboards
+/// keep "Magic Keyboard" (or the older "Apple Wireless Keyboard") in their
+/// name even after a user renames them in macOS ("Olof's Magic Keyboard").
+pub fn name_is_apple_keyboard(name: &[u8]) -> bool {
+    fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+    }
+    contains_ci(name, b"Magic Keyboard") || contains_ci(name, b"Apple Wireless Keyboard")
+}
+
+/// Boot keyboard modifier bits: Alt and GUI, left and right.
+const MOD_LALT: u8 = 0x04;
+const MOD_LGUI: u8 = 0x08;
+const MOD_RALT: u8 = 0x40;
+const MOD_RGUI: u8 = 0x80;
+
+/// The ISO keys an Apple keyboard reports the other way round: the key left
+/// of 1 (§ on a Swedish keyboard) and the one right of left Shift (<).
+const KEY_GRAVE: u8 = 0x35;
+const KEY_NON_US_BACKSLASH: u8 = 0x64;
+
+/// Rewrite a boot report from an Apple keyboard into PC conventions, what
+/// Linux's hid_apple does for one plugged in directly (`swap_opt_cmd`,
+/// `iso_layout`) and what a host that is not a Mac expects:
+///
+/// - Option and Command trade places: the key next to the space bar (Cmd)
+///   arrives as Alt, as on a PC keyboard, and Option as the GUI key.
+/// - The ISO keys § and < arrive where a PC keyboard puts them.
+pub fn apple_to_pc(report: &mut [u8; BOOT_KEYBOARD_REPORT_LEN]) {
+    let m = report[0];
+    let mut out = m & !(MOD_LALT | MOD_LGUI | MOD_RALT | MOD_RGUI);
+    if m & MOD_LALT != 0 {
+        out |= MOD_LGUI;
+    }
+    if m & MOD_LGUI != 0 {
+        out |= MOD_LALT;
+    }
+    if m & MOD_RALT != 0 {
+        out |= MOD_RGUI;
+    }
+    if m & MOD_RGUI != 0 {
+        out |= MOD_RALT;
+    }
+    report[0] = out;
+    for key in &mut report[2..] {
+        *key = match *key {
+            KEY_GRAVE => KEY_NON_US_BACKSLASH,
+            KEY_NON_US_BACKSLASH => KEY_GRAVE,
+            k => k,
+        };
+    }
+}
+
+#[cfg(test)]
+mod apple_tests {
+    use super::*;
+
+    #[test]
+    fn recognises_apple_keyboards() {
+        assert!(name_is_apple_keyboard(b"Magic Keyboard"));
+        assert!(name_is_apple_keyboard(b"Olof's magic keyboard"));
+        assert!(name_is_apple_keyboard(b"Apple Wireless Keyboard"));
+        assert!(!name_is_apple_keyboard(b"Logitech K380"));
+        assert!(!name_is_apple_keyboard(b""));
+    }
+
+    #[test]
+    fn swaps_option_command_and_the_iso_keys() {
+        // Left Cmd + right Option held, § and a pressed.
+        let mut r = [MOD_LGUI | MOD_RALT, 0, KEY_GRAVE, 0x04, 0, 0, 0, 0];
+        apple_to_pc(&mut r);
+        assert_eq!(r, [MOD_LALT | MOD_RGUI, 0, KEY_NON_US_BACKSLASH, 0x04, 0, 0, 0, 0]);
+        // Ctrl and Shift stay where they are; < becomes §.
+        let mut r = [0x01 | 0x02, 0, KEY_NON_US_BACKSLASH, 0, 0, 0, 0, 0];
+        apple_to_pc(&mut r);
+        assert_eq!(r, [0x01 | 0x02, 0, KEY_GRAVE, 0, 0, 0, 0, 0]);
+    }
+}

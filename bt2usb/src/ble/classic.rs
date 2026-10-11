@@ -22,7 +22,7 @@ use core::cell::RefCell;
 use core::fmt::Write as _;
 use core::sync::atomic::Ordering;
 
-use bt2usb_core::classic::{cod_is_keyboard, cod_is_peripheral, translate_keyboard_report};
+use bt2usb_core::classic::{apple_to_pc, cod_is_keyboard, cod_is_peripheral, name_is_apple_keyboard, translate_keyboard_report};
 use bt_classic_host::hidp::ReportType;
 use bt_classic_host::{
     ClassicRunner, HidClient, HostResources, L2capState, LinkEvent, PairingEvent,
@@ -311,9 +311,9 @@ static UNKNOWN_KEY_REPORT_LOGS: portable_atomic::AtomicU8 = portable_atomic::Ato
 /// leaves the host with a key held down and repeating. So back-pressure gets a
 /// short wait rather than an immediate drop — bounded, so a stalled USB side
 /// can never stop this task from servicing HCI events (disconnects included).
-async fn forward_keyboard_report(link: usize, report: &bt_classic_host::HidReport) {
+async fn forward_keyboard_report(link: usize, apple: bool, report: &bt_classic_host::HidReport) {
     let data = &report.data[..report.len];
-    let Some(boot_report) = translate_keyboard_report(data) else {
+    let Some(mut boot_report) = translate_keyboard_report(data) else {
         // Consumer/media keys and vendor reports land here. Logged rather than
         // guessed at: a misread report types characters nobody pressed.
         //
@@ -337,6 +337,14 @@ async fn forward_keyboard_report(link: usize, report: &bt_classic_host::HidRepor
         }
         return;
     };
+
+    // macOS reads an Apple keyboard's own codes; every other host expects a
+    // PC keyboard's (Linux fixes them only for one plugged in directly).
+    if apple
+        && crate::usb_hid::DETECTED_OS.load(Ordering::Relaxed) != crate::usb_hid::OS_MACOS
+    {
+        apple_to_pc(&mut boot_report);
+    }
 
     let mut event = HidReportEvent::new();
     event.report_type = HidReportType::Keyboard;
@@ -365,6 +373,9 @@ struct Link {
     addr: [u8; 6],
     handle: ConnHandle,
     profile: DeviceProfile,
+    /// An Apple keyboard (by its name): its reports are turned into PC
+    /// conventions for a host that is not a Mac (apple_to_pc).
+    apple: bool,
     l2cap: L2capState<4>,
     hid: HidClient,
     /// HID channels are open and the profile setup has run.
@@ -978,14 +989,28 @@ where
                             // profile by hand. With no bond yet this is a
                             // first pairing, so fall back to what Inquiry
                             // said the device was.
-                            let stored_profile_id = {
+                            let (stored_profile_id, stored_name) = {
                                 let mut f = flash_mutex.lock().await;
                                 let bonds = bonding::load_classic_bonds(&mut f).await;
-                                bonds
-                                    .iter()
-                                    .find(|b| b.addr == addr_bytes)
-                                    .map(|b| b.profile_id)
+                                let bond = bonds.iter().find(|b| b.addr == addr_bytes);
+                                (
+                                    bond.map(|b| b.profile_id),
+                                    bond.filter(|b| b.name_len > 0).map(|b| (b.name, b.name_len)),
+                                )
                             };
+                            // The name from this boot's Inquiry, else the one
+                            // the bond kept: a bonded keyboard reconnects
+                            // without being scanned again.
+                            let (device_name, device_name_len) = lookup_scan_name(&addr_bytes)
+                                .filter(|(_, len)| *len > 0)
+                                .or(stored_name)
+                                .unwrap_or(([0u8; 32], 0));
+                            let apple = name_is_apple_keyboard(
+                                &device_name[..(device_name_len as usize).min(32)],
+                            );
+                            if apple {
+                                info!("[classic] Apple keyboard: PC conventions for non-Mac hosts");
+                            }
                             let profile = match stored_profile_id {
                                 Some(id) => DeviceProfile::from_id(id),
                                 None => profile_from_inquiry(&addr_bytes),
@@ -999,8 +1024,7 @@ where
                                 link_keys.borrow().load(&addr)
                             };
                             if let Some(ki) = key_info {
-                                let (scan_name, scan_name_len) =
-                                    lookup_scan_name(&addr_bytes).unwrap_or(([0u8; 32], 0));
+                                let (scan_name, scan_name_len) = (device_name, device_name_len);
                                 let mut f = flash_mutex.lock().await;
                                 match bonding::store_classic_bond(
                                     &mut f,
@@ -1040,6 +1064,7 @@ where
                                 addr: addr_bytes,
                                 handle,
                                 profile,
+                                apple,
                                 l2cap: L2capState::<4>::new(handle),
                                 hid: HidClient::new(),
                                 active: false,
@@ -1132,7 +1157,7 @@ where
                             .process_data(channel_idx, &acl_buf[..data_len], &mut report)
                         {
                             if link.profile.is_keyboard() {
-                                forward_keyboard_report(idx, &report).await;
+                                forward_keyboard_report(idx, link.apple, &report).await;
                             } else {
                                 forward_trackpad_report(idx, &report);
                             }
