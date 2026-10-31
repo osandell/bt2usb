@@ -593,6 +593,7 @@ async fn mt2_actuator_task(mut reader: HidReader<'static, Driver<'static, USB>, 
 pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
     // Set the detected OS atomic so the rest of the USB subsystem knows
     crate::usb_hid::DETECTED_OS.store(detected_os as u8, Ordering::Relaxed);
+    crate::usb_hid::PHASE1_STARTED_AT_TICKS.store(embassy_time::Instant::now().as_ticks().max(1), Ordering::Relaxed);
 
     // Enable TIMER_IRQ_0 on Core 1's NVIC so embassy_time works
     // (e.g. RPC timeouts). embassy_rp::init() only enables it on Core 0.

@@ -1,7 +1,7 @@
 //! Phase 0 probe USB device for OS fingerprinting.
 //!
 //! Presents a minimal vendor-HID device during Phase 0 to fingerprint the host
-//! OS via USB enumeration behavior. After collecting signals for up to 1 second,
+//! OS via USB enumeration behavior. After collecting signals for up to 4 seconds,
 //! writes the detected OS to scratch registers and triggers a watchdog reset
 //! to enter Phase 1 with the appropriate USB configuration.
 
@@ -228,17 +228,30 @@ async fn probe_eval_task(_writer: HidWriter<'static, Driver<'static, USB>, 8>) {
         PROBE_MULTI_RESET.load(Ordering::Relaxed),
     );
 
-    // At T+500ms: evaluate heuristic signals
+    // At T+500ms: a host that showed itself (Windows, Linux) is committed.
     let os = evaluate_os();
-    if os != DetectedOs::Unknown {
+    if os == DetectedOs::Windows || os == DetectedOs::Linux {
         info!("[probe] Heuristic at 500ms -> {}", os);
         commit_and_reset(os).await;
     }
 
-    // Wait until T+1000ms hard timeout
-    Timer::after(Duration::from_millis(500)).await;
+    // No SET_IDLE yet reads as macOS, but a Linux kernel early in its boot
+    // enumerates the device before usbhid is loaded (Ubuntu has it as a
+    // module, bound ~1.5s after enumeration), and only usbhid sends
+    // SET_IDLE. The verdict waits for it until T+4s: a real Mac only gets
+    // its trackpad a few seconds later after a cold boot or a switch, while
+    // a Linux machine rebooted with the Pico attached no longer comes up
+    // with the Magic Trackpad emulation, which it cannot drive.
+    for _ in 0..70 {
+        Timer::after(Duration::from_millis(50)).await;
+        if PROBE_SET_IDLE_RECEIVED.load(Ordering::Relaxed) || PROBE_STRING_0X_EE.load(Ordering::Relaxed) {
+            let os = evaluate_os();
+            info!("[probe] Late signal -> {}", os);
+            commit_and_reset(os).await;
+        }
+    }
     let os = evaluate_os();
-    info!("[probe] Timeout at 1000ms -> {}", os);
+    info!("[probe] Timeout at 4000ms -> {}", os);
     commit_and_reset(os).await;
 }
 

@@ -38,6 +38,9 @@ pub static DETECTED_OS: AtomicU8 = AtomicU8::new(OS_UNKNOWN);
 /// Tick count when USB was last configured (for OS detection timeout).
 pub static CONFIGURED_AT_TICKS: AtomicU64 = AtomicU64::new(0);
 
+/// Tick count when the Phase 1 USB device was built (`start_core1_usb`).
+pub static PHASE1_STARTED_AT_TICKS: AtomicU64 = AtomicU64::new(0);
+
 /// Set true when a USB bus reset occurs >2s after Phase 1 configuration.
 /// Checked by the HID handler task to trigger a reprobe (watchdog reset → Phase 0).
 pub static REPROBE_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -478,16 +481,28 @@ impl Handler for UsbDeviceHandler {
         // needs to re-negotiate. For quick re-enumerations (<2s, e.g. VM
         // hotplug), keep protocol state — the host expects the device to
         // remain in the same state and may not re-send Feature reports.
+        //
+        // A Phase 1 device that no host has configured in >2s counts too:
+        // the probe then ran against a host that never took this device,
+        // typically a PC's firmware (BIOS/UEFI) at boot. It sends neither
+        // String 0xEE nor SET_IDLE, so the probe reads it as macOS; the OS
+        // that boots after it resets the bus and must get a probe of its
+        // own, or a Linux machine is left with the Magic Trackpad emulation.
+        // A real Mac configures the device within milliseconds of the probe.
+        let now = embassy_time::Instant::now().as_ticks();
         let configured_at = CONFIGURED_AT_TICKS.load(Ordering::Relaxed);
-        if configured_at > 0 {
-            let elapsed = embassy_time::Instant::now().as_ticks() - configured_at;
-            if elapsed > REPROBE_THRESHOLD_TICKS {
-                info!("USB bus reset >2s after config -> reprobe requested");
-                REPROBE_REQUESTED.store(true, Ordering::Relaxed);
-                HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
-                crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
-                crate::ptp::reset();
-            }
+        let started_at = PHASE1_STARTED_AT_TICKS.load(Ordering::Relaxed);
+        let stale = if configured_at > 0 {
+            now - configured_at > REPROBE_THRESHOLD_TICKS
+        } else {
+            started_at > 0 && now - started_at > REPROBE_THRESHOLD_TICKS
+        };
+        if stale {
+            info!("USB bus reset >2s after config (or never configured) -> reprobe requested");
+            REPROBE_REQUESTED.store(true, Ordering::Relaxed);
+            HIRES_SCROLL_ENABLED.store(false, Ordering::Relaxed);
+            crate::mt2::MT_ENABLED.store(false, Ordering::Relaxed);
+            crate::ptp::reset();
         }
 
         info!("USB bus reset");
