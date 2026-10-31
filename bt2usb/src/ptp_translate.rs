@@ -35,6 +35,9 @@ pub struct PtpPassthrough {
     core: InterpolationCore,
     /// PTP scan time counter (100 µs units, wrapping 16-bit).
     scan_time: u16,
+    /// Contacts sent with tip_switch=1 in the previous report: (contact id, x, y).
+    down_contacts: [(u8, u16, u16); ptp::MAX_FINGERS],
+    down_count: u8,
 }
 
 impl PtpPassthrough {
@@ -42,6 +45,8 @@ impl PtpPassthrough {
         Self {
             core: InterpolationCore::new(),
             scan_time: 0,
+            down_contacts: [(0, 0, 0); ptp::MAX_FINGERS],
+            down_count: 0,
         }
     }
 
@@ -87,11 +92,37 @@ impl PtpPassthrough {
                 fingers[active_count as usize] = (
                     confidence,
                     tip_switch,
-                    out.ids[i],
+                    out.ids[i] & 0x07,
                     mt2_x_to_ptp(mt2_x),
                     mt2_y_to_ptp(mt2_y),
                 );
                 active_count += 1;
+            }
+        }
+
+        // The MT2 can drop a contact from its report without a 0xC0 release
+        // (a finger that only hovered, state 0x40, often does). hid-multitouch
+        // never releases a PTP contact that just stops appearing, so it stays
+        // on the pad for good and every one-finger click counts as two
+        // (clickfinger right click). Lift each such contact explicitly.
+        for &(id, x, y) in &self.down_contacts[..self.down_count as usize] {
+            if (active_count as usize) >= ptp::MAX_FINGERS {
+                break;
+            }
+            let still_reported = fingers[..active_count as usize]
+                .iter()
+                .any(|&(_, _, reported_id, _, _)| reported_id == id);
+            if !still_reported {
+                fingers[active_count as usize] = (true, false, id, x, y);
+                active_count += 1;
+            }
+        }
+
+        self.down_count = 0;
+        for &(_, tip_switch, id, x, y) in &fingers[..active_count as usize] {
+            if tip_switch {
+                self.down_contacts[self.down_count as usize] = (id, x, y);
+                self.down_count += 1;
             }
         }
 
