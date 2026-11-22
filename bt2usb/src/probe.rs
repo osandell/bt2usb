@@ -322,6 +322,7 @@ pub fn start_core1_usb_probe(usb: Peri<'static, USB>, attempt_count: u8) -> ! {
         request_handler: Some(PROBE_REQ_HANDLER.init(ProbeRequestHandler)),
         poll_ms: 255, // Slow poll — we never send reports
         max_packet_size: 8,
+        interface_string: None,
     };
     let writer = HidWriter::<_, 8>::new(
         &mut builder,

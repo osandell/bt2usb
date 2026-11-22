@@ -531,8 +531,29 @@ pub const VENDOR_RPC_REPORT_DESC: &[u8] = &[
     0xC0, // End Collection
 ];
 
-/// Device handler for USB state changes
-pub struct UsbDeviceHandler;
+/// Device handler for USB state changes. Also serves the mouse and keyboard
+/// extras interfaces' names (iInterface), so a host can tell the two
+/// batteries apart: Linux names every HID battery after the device's product
+/// string, the same for all interfaces, but shows each interface's string.
+pub struct UsbDeviceHandler {
+    names: crate::bonding::InterfaceNames,
+    pointer_index: Option<StringIndex>,
+    keyboard_index: Option<StringIndex>,
+}
+
+impl UsbDeviceHandler {
+    pub fn new(
+        names: crate::bonding::InterfaceNames,
+        pointer_index: Option<StringIndex>,
+        keyboard_index: Option<StringIndex>,
+    ) -> Self {
+        Self {
+            names,
+            pointer_index,
+            keyboard_index,
+        }
+    }
+}
 
 impl Handler for UsbDeviceHandler {
     fn enabled(&mut self, enabled: bool) {
@@ -615,6 +636,12 @@ impl Handler for UsbDeviceHandler {
         if index == StringIndex(0xEE) {
             info!("OS detected: Windows (String 0xEE requested)");
             DETECTED_OS.store(OS_WINDOWS, Ordering::Relaxed);
+        }
+        if Some(index) == self.pointer_index && !self.names.pointer.is_empty() {
+            return Some(self.names.pointer.as_str());
+        }
+        if Some(index) == self.keyboard_index && !self.names.keyboard.is_empty() {
+            return Some(self.names.keyboard.as_str());
         }
         None
     }

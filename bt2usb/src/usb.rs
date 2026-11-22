@@ -629,7 +629,11 @@ async fn mt2_actuator_task(mut reader: HidReader<'static, Driver<'static, USB>, 
 /// 2. Builds the USB device with OS-appropriate interfaces and identity
 /// 3. Starts the Core 1 executor with all USB tasks
 /// 4. Signals Core 0 that the executor is ready via `CORE1_EXECUTOR_READY`
-pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
+pub fn start_core1_usb(
+    usb: Peri<'static, USB>,
+    detected_os: DetectedOs,
+    names: crate::bonding::InterfaceNames,
+) -> ! {
     // Set the detected OS atomic so the rest of the USB subsystem knows
     crate::usb_hid::DETECTED_OS.store(detected_os as u8, Ordering::Relaxed);
     crate::usb_hid::PHASE1_STARTED_AT_TICKS.store(embassy_time::Instant::now().as_ticks().max(1), Ordering::Relaxed);
@@ -699,6 +703,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         request_handler: None,
         poll_ms: 1,
         max_packet_size: 64,
+        interface_string: None,
     };
 
     // State buffers — 768 for config desc (PTP descriptor ~565 bytes + interface overhead),
@@ -722,7 +727,15 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         MS_DESC.init([0; 256]),
         CONTROL_BUF.init([0; 320]),
     );
-    builder.handler(DEVICE_HANDLER.init(crate::usb_hid::UsbDeviceHandler));
+    // Interface names (standard mode): the bonded trackpad's on the mouse
+    // interface, the keyboard's on the keyboard extras interface.
+    let pointer_string = (!is_macos && !names.pointer.is_empty()).then(|| builder.string());
+    let keyboard_string = (!is_macos && !names.keyboard.is_empty()).then(|| builder.string());
+    builder.handler(DEVICE_HANDLER.init(crate::usb_hid::UsbDeviceHandler::new(
+        names,
+        pointer_string,
+        keyboard_string,
+    )));
 
     let kb_writer = HidWriter::<_, 8>::new(
         &mut builder,
@@ -739,6 +752,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             request_handler: Some(MOUSE_HANDLER.init(crate::usb_hid::HiresMouseRequestHandler)),
             poll_ms: 1,
             max_packet_size: 64,
+            interface_string: pointer_string,
         };
         Some(HidWriter::<_, 8>::new(
             &mut builder,
@@ -758,6 +772,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             request_handler: Some(PTP_HANDLER.init(crate::ptp::PtpRequestHandler::new())),
             poll_ms: 1,
             max_packet_size: 64,
+            interface_string: None,
         };
         Some(HidWriter::<_, 64>::new(
             &mut builder,
@@ -777,6 +792,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             request_handler: Some(MT2_HANDLER.init(crate::mt2::Mt2TrackpadRequestHandler::new())),
             poll_ms: 1,
             max_packet_size: 64,
+            interface_string: None,
         };
         Some(HidWriter::<_, 64>::new(
             &mut builder,
@@ -800,6 +816,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             ),
             poll_ms: 1,
             max_packet_size: 64,
+            interface_string: None,
         };
         let actuator_hid = HidReaderWriter::<_, 64, 64>::new(
             &mut builder,
@@ -818,6 +835,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         request_handler: None,
         poll_ms: 10,
         max_packet_size: 64,
+        interface_string: None,
     };
     let rpc_hid = HidReaderWriter::<_, 64, 64>::new(
         &mut builder,
@@ -840,6 +858,7 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
             ),
             poll_ms: 10,
             max_packet_size: 64,
+            interface_string: keyboard_string,
         };
         Some(HidWriter::<_, 8>::new(
             &mut builder,

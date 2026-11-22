@@ -908,3 +908,34 @@ pub async fn clear_classic_bond_by_address(
     warn!("Classic bond not found for address {:02x}", address);
     Err(())
 }
+
+/// Names for the USB mouse and keyboard extras interfaces (iInterface): the
+/// first bonded Classic pointing device's and keyboard's names. Read once
+/// before USB starts, since the host reads the strings at enumeration.
+#[derive(Default)]
+pub struct InterfaceNames {
+    pub pointer: heapless::String<32>,
+    pub keyboard: heapless::String<32>,
+}
+
+pub async fn load_interface_names(
+    flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
+) -> InterfaceNames {
+    let mut names = InterfaceNames::default();
+    for bond in load_classic_bonds(flash).await {
+        let len = (bond.name_len as usize).min(bond.name.len());
+        let Ok(name) = core::str::from_utf8(&bond.name[..len]) else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        let slot = if crate::device_profile::DeviceProfile::from_id(bond.profile_id).is_keyboard() {
+            &mut names.keyboard
+        } else {
+            &mut names.pointer
+        };
+        if slot.is_empty() {
+            let _ = slot.push_str(name);
+        }
+    }
+    names
+}

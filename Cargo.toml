@@ -3,6 +3,11 @@ resolver = "2"
 members = ["bt2usb", "bt2usb-cli", "bt2usb-core", "hci-mux", "bt-classic-host"]
 default-members = ["bt2usb-cli"]
 
+# embassy-usb 0.5.1 with one addition: hid::Config::interface_string, so a
+# HID interface can carry a name (the bonded device's) that a host can show.
+[patch.crates-io]
+embassy-usb = { path = "vendor/embassy-usb" }
+
 [profile.release]
 debug = 2
 lto = true

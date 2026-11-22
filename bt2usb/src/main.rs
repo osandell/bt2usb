@@ -302,14 +302,18 @@ fn main() -> ! {
     };
 
     // Phase 1: present the OS-appropriate USB configuration and run BLE.
-    let flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1, Irqs);
+    let mut flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH1, Irqs);
+
+    // The bonded devices' names for the USB interface strings, read before
+    // USB starts: the host reads them at enumeration.
+    let names = embassy_futures::block_on(bonding::load_interface_names(&mut flash));
 
     let usb = p.USB;
     spawn_core1(
         p.CORE1,
         unsafe { &mut *addr_of_mut!(CORE1_STACK) },
         move || {
-            usb::start_core1_usb(usb, detected_os);
+            usb::start_core1_usb(usb, detected_os, names);
         },
     );
     info!("[core0] Core 1 spawned, waiting for executor ready...");
