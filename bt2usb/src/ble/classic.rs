@@ -267,6 +267,17 @@ async fn apply_profile_setup<C: bt_hci::controller::Controller>(
                 defmt::Debug2Format(&e)
             ),
         }
+        // Apple's keyboards answer the same battery report as the trackpad
+        // (handle_battery_report); others answer with a handshake error.
+        if let Err(e) = hid
+            .get_report(l2cap, controller, ReportType::Input, 0x90)
+            .await
+        {
+            warn!(
+                "[classic] Keyboard battery GET_REPORT failed: {:?}",
+                defmt::Debug2Format(&e)
+            );
+        }
         return;
     }
 
@@ -635,6 +646,30 @@ fn handle_inquiry_event(kind: bt_hci::event::EventKind, data: &[u8]) -> bool {
     false
 }
 
+/// Apple's battery report: `[0x90, flags, capacity]`, the answer to
+/// GET_REPORT(Input, 0x90) and also sent unasked when the level changes.
+/// Flags: bit 0 on external power, bit 1 charging, bit 2 discharging. The
+/// Magic Trackpad 2 and the Magic Keyboard (USB-C generation) both use it.
+/// Exactly three bytes: a boot keyboard report is nine, so a modifier byte
+/// that happens to be 0x90 is never mistaken for one.
+fn handle_battery_report(link: usize, keyboard: bool, report: &bt_classic_host::HidReport) -> bool {
+    if report.len != 3 || report.data[0] != 0x90 {
+        return false;
+    }
+    let flags = report.data[1];
+    let capacity = report.data[2].min(100);
+    let charging = flags & 0x02 != 0;
+    info!(
+        "[classic] Battery (link {}, {}): capacity={} flags=0x{:02x}",
+        link,
+        if keyboard { "keyboard" } else { "pointer" },
+        capacity,
+        flags
+    );
+    crate::ble_hid::update_classic_battery(link, capacity, charging, keyboard);
+    true
+}
+
 /// Forward a HID report from a Magic Trackpad link to USB.
 fn forward_trackpad_report(link: usize, report: &bt_classic_host::HidReport) {
     // Report ID 0x31 = BT multitouch data (4-byte header + N*9 touch points)
@@ -665,16 +700,6 @@ fn forward_trackpad_report(link: usize, report: &bt_classic_host::HidReport) {
         if HID_REPORT_CHANNEL.try_send(event).is_err() {
             debug!("[classic] HID channel full, dropping MT2 report");
         }
-    } else if report_id == 0x90 && report.len >= 3 {
-        // Battery report: [0x90, flags, capacity]
-        // flags bits: 0=AC present, 1=charging, 2=discharging
-        let flags = report.data[1];
-        let capacity = report.data[2];
-        info!(
-            "[classic] Battery: capacity={} flags=0x{:02x}",
-            capacity, flags
-        );
-        crate::ble_hid::update_classic_battery_level(link, capacity);
     } else {
         debug!(
             "[classic] HID report id=0x{:02x} len={} data={:02x}",
@@ -1154,7 +1179,9 @@ where
                             .hid
                             .process_data(channel_idx, &acl_buf[..data_len], &mut report)
                         {
-                            if link.profile.is_keyboard() {
+                            if handle_battery_report(idx, link.profile.is_keyboard(), &report) {
+                                // A battery answer, from a trackpad or a keyboard
+                            } else if link.profile.is_keyboard() {
                                 forward_keyboard_report(idx, link.apple, &report).await;
                             } else {
                                 forward_trackpad_report(idx, &report);
@@ -1329,13 +1356,13 @@ where
                         link_down(idx);
                         continue;
                     }
-                    // Periodic battery poll. Report ID 0x90 is Magic Trackpad
-                    // specific; a keyboard would only answer with a handshake
-                    // error, so don't ask.
-                    if link.active
-                        && !link.profile.is_keyboard()
-                        && ticks % BATTERY_POLL_TICKS == 0
-                    {
+                    // Periodic battery poll (Apple's report 0x90). A keyboard
+                    // is asked only once it has answered: others reply with a
+                    // handshake error every time.
+                    let answers = !link.profile.is_keyboard()
+                        || crate::ble_hid::CLASSIC_BATTERY_LEVELS[idx].load(Ordering::Relaxed)
+                            != 0xFF;
+                    if link.active && answers && ticks % BATTERY_POLL_TICKS == 0 {
                         if let Err(e) = link
                             .hid
                             .get_report(&link.l2cap, controller, ReportType::Input, 0x90)

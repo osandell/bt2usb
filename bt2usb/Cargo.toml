@@ -19,7 +19,9 @@ embassy-rp = { version = "0.10", features = [
     "rt",
 ] }
 embassy-time = { version = "0.5", features = ["defmt"] }
-embassy-usb = { version = "0.5", features = ["defmt"] }
+# Standard mode has five HID interfaces (keyboard, mouse, PTP, RPC, keyboard
+# extras); the crate defaults to four.
+embassy-usb = { version = "0.5", features = ["defmt", "max-interface-count-8", "max-handler-count-8"] }
 embassy-sync = { version = "0.7", features = ["defmt"] }
 embassy-futures = { version = "0.1" }
 embassy-embedded-hal = { version = "0.6", features = ["defmt"] }

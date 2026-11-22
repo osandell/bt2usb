@@ -212,16 +212,57 @@ async fn handle_mouse_report_standard(
     }
 }
 
-/// Send battery level Input report on the mouse interface (Report ID 2).
+/// Send a battery Input report ([report_id, level, charging]): Report ID 2
+/// on the mouse interface, 3 on the keyboard extras interface.
 ///
-/// The report lives in a top-level Background Controls Application collection
-/// that is a sibling of the Mouse collection on the same interface, so Input
-/// reports here do not count as mouse activity for host idle-sleep purposes.
-async fn send_battery_level(writer: &mut HidWriter<'static, Driver<'static, USB>, 8>, level: u8) {
-    let buf = [0x02, level];
-    crate::usb_hid::record_hid_write(crate::usb_hid::HID_IFACE_MOUSE, &buf, true);
+/// On the mouse interface (pointing devices) and the keyboard extras
+/// interface (keyboards). The report lives in a top-level Background Controls
+/// Application collection, so Input reports here do not count as mouse
+/// activity for host idle-sleep purposes. Unknown levels (0xFF) are skipped.
+async fn send_battery_level(
+    writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
+    iface: Option<usize>,
+    report_id: u8,
+    level: u8,
+    charging: bool,
+) {
+    if level == 0xFF {
+        return;
+    }
+    let buf = [report_id, level, charging as u8];
+    if let Some(iface) = iface {
+        crate::usb_hid::record_hid_write(iface, &buf, true);
+    }
     let _ =
         embassy_time::with_timeout(embassy_time::Duration::from_secs(5), writer.write(&buf)).await;
+}
+
+/// Push the pointer battery on the mouse interface and the keyboard battery
+/// on the keyboard extras interface.
+async fn send_battery_levels(
+    mouse_writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
+    kb_extras_writer: &mut HidWriter<'static, Driver<'static, USB>, 8>,
+) {
+    use crate::ble_hid::{
+        KEYBOARD_BATTERY_CHARGING, KEYBOARD_BATTERY_LEVEL, POINTER_BATTERY_CHARGING,
+        POINTER_BATTERY_LEVEL,
+    };
+    send_battery_level(
+        mouse_writer,
+        Some(crate::usb_hid::HID_IFACE_MOUSE),
+        0x02,
+        POINTER_BATTERY_LEVEL.load(Ordering::Relaxed),
+        POINTER_BATTERY_CHARGING.load(Ordering::Relaxed),
+    )
+    .await;
+    send_battery_level(
+        kb_extras_writer,
+        None,
+        0x03,
+        KEYBOARD_BATTERY_LEVEL.load(Ordering::Relaxed),
+        KEYBOARD_BATTERY_CHARGING.load(Ordering::Relaxed),
+    )
+    .await;
 }
 
 /// Check if a reprobe has been requested (USB switch detected) and reset if so.
@@ -244,6 +285,7 @@ async fn usb_hid_handler_task_standard(
     mut keyboard_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut mouse_writer: HidWriter<'static, Driver<'static, USB>, 8>,
     mut ptp_writer: HidWriter<'static, Driver<'static, USB>, 64>,
+    mut kb_extras_writer: HidWriter<'static, Driver<'static, USB>, 8>,
 ) {
     info!("USB HID handler task started (standard+PTP mode), waiting for BLE reports...");
 
@@ -259,10 +301,7 @@ async fn usb_hid_handler_task_standard(
     // Send initial battery level if already known. Report ID 2 lives in its
     // own Background Controls top-level collection so this Input push should
     // not count as mouse activity for host idle-sleep tracking.
-    let initial_level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
-    if initial_level != 0xFF {
-        send_battery_level(&mut mouse_writer, initial_level).await;
-    }
+    send_battery_levels(&mut mouse_writer, &mut kb_extras_writer).await;
 
     // Periodic ticker for PTP passthrough reclocking. See mt2 task for
     // why this must be a Ticker rather than a Timer::after.
@@ -309,8 +348,8 @@ async fn usb_hid_handler_task_standard(
                     debug!("Unhandled HID report type");
                 }
             },
-            Either3::Second(level) => {
-                send_battery_level(&mut mouse_writer, level).await;
+            Either3::Second(_) => {
+                send_battery_levels(&mut mouse_writer, &mut kb_extras_writer).await;
             }
             Either3::Third(_) => {
                 // PTP passthrough tick: reclocked output at steady USB rate
@@ -787,6 +826,30 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
     );
     let (rpc_reader, rpc_writer) = rpc_hid.split();
 
+    // Keyboard extras (standard mode only): a Classic keyboard's battery as a
+    // second power supply on the host, plus room for its media keys. Added
+    // after RPC so the interfaces before it keep their numbers.
+    static STATE_KB_EXTRAS: StaticCell<embassy_usb::class::hid::State> = StaticCell::new();
+    static KB_EXTRAS_HANDLER: StaticCell<crate::usb_hid::KeyboardExtrasRequestHandler> =
+        StaticCell::new();
+    let kb_extras_writer = if !is_macos {
+        let kb_extras_config = embassy_usb::class::hid::Config {
+            report_descriptor: crate::usb_hid::KEYBOARD_EXTRAS_REPORT_DESC,
+            request_handler: Some(
+                KB_EXTRAS_HANDLER.init(crate::usb_hid::KeyboardExtrasRequestHandler),
+            ),
+            poll_ms: 10,
+            max_packet_size: 64,
+        };
+        Some(HidWriter::<_, 8>::new(
+            &mut builder,
+            STATE_KB_EXTRAS.init(embassy_usb::class::hid::State::new()),
+            kb_extras_config,
+        ))
+    } else {
+        None
+    };
+
     let usb_dev = builder.build();
     info!(
         "[core1] USB HID device initialized ({})",
@@ -799,17 +862,22 @@ pub fn start_core1_usb(usb: Peri<'static, USB>, detected_os: DetectedOs) -> ! {
         spawner.spawn(crate::watchdog::core1_tick_task()).unwrap();
 
         // Spawn the appropriate HID handler task based on OS
-        match (mt2_writer, mouse_writer, ptp_writer) {
-            (Some(mt2_w), _, _) => {
+        match (mt2_writer, mouse_writer, ptp_writer, kb_extras_writer) {
+            (Some(mt2_w), _, _, _) => {
                 // macOS: MT2 trackpad for scroll, no mouse interface
                 spawner
                     .spawn(usb_hid_handler_task_mt2(kb_writer, mt2_w))
                     .unwrap();
             }
-            (None, Some(mouse_w), Some(ptp_w)) => {
+            (None, Some(mouse_w), Some(ptp_w), Some(kb_extras_w)) => {
                 // Windows/Linux: standard mouse + PTP touchpad
                 spawner
-                    .spawn(usb_hid_handler_task_standard(kb_writer, mouse_w, ptp_w))
+                    .spawn(usb_hid_handler_task_standard(
+                        kb_writer,
+                        mouse_w,
+                        ptp_w,
+                        kb_extras_w,
+                    ))
                     .unwrap();
             }
             _ => {

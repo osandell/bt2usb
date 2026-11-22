@@ -5,7 +5,7 @@
 //! - HID report event types for communication between tasks
 //! - BLE HID report parsing
 
-use core::sync::atomic::AtomicU8;
+use core::sync::atomic::{AtomicBool, AtomicU8};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -48,28 +48,64 @@ pub static BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
 pub static CLASSIC_BATTERY_LEVELS: [AtomicU8; crate::ble::slots::MAX_CLASSIC_LINKS] =
     [const { AtomicU8::new(0xFF) }; crate::ble::slots::MAX_CLASSIC_LINKS];
 
+/// Classic links whose battery belongs to a keyboard (reported on the USB
+/// keyboard-extras interface instead of the mouse interface).
+pub static CLASSIC_BATTERY_IS_KEYBOARD: [AtomicBool; crate::ble::slots::MAX_CLASSIC_LINKS] =
+    [const { AtomicBool::new(false) }; crate::ble::slots::MAX_CLASSIC_LINKS];
+
+/// Classic links that last reported they are charging.
+pub static CLASSIC_BATTERY_CHARGING: [AtomicBool; crate::ble::slots::MAX_CLASSIC_LINKS] =
+    [const { AtomicBool::new(false) }; crate::ble::slots::MAX_CLASSIC_LINKS];
+
+/// Lowest battery among pointing devices (BLE slots and Classic trackpads),
+/// 0xFF if none is known. Sent on the USB mouse interface.
+pub static POINTER_BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
+/// Whether the pointing device behind `POINTER_BATTERY_LEVEL` is charging.
+pub static POINTER_BATTERY_CHARGING: AtomicBool = AtomicBool::new(false);
+
+/// Lowest battery among Classic keyboards, 0xFF if none is known. Sent on
+/// the USB keyboard-extras interface, so the host sees a second battery.
+pub static KEYBOARD_BATTERY_LEVEL: AtomicU8 = AtomicU8::new(0xFF);
+/// Whether the keyboard behind `KEYBOARD_BATTERY_LEVEL` is charging.
+pub static KEYBOARD_BATTERY_CHARGING: AtomicBool = AtomicBool::new(false);
+
 /// Signal from BLE (Core 0) to USB battery task (Core 1).
-/// Signaled with the new battery level (0-100) whenever it changes.
-/// The USB task wakes up and sends a USB HID battery input report.
+/// Signaled with the overall minimum (0-100) whenever a level changes; the
+/// USB task reads the pointer and keyboard levels above.
 pub static BATTERY_USB_SIGNAL: Signal<CriticalSectionRawMutex, u8> = Signal::new();
 
-/// Recompute the aggregate `BATTERY_LEVEL` (minimum across BLE slots + Classic)
+/// Recompute the aggregates (overall `BATTERY_LEVEL`, pointer and keyboard)
 /// and notify the USB battery task.
 fn refresh_aggregate() {
     use core::sync::atomic::Ordering::Relaxed;
-    let mut min = 0xFFu8;
+    let mut pointer = (0xFFu8, false);
+    let mut keyboard = (0xFFu8, false);
     for bl in &BATTERY_LEVELS {
         let l = bl.load(Relaxed);
-        if l != 0xFF && l < min {
-            min = l;
+        if l != 0xFF && l < pointer.0 {
+            pointer = (l, false);
         }
     }
-    for bl in &CLASSIC_BATTERY_LEVELS {
+    for (i, bl) in CLASSIC_BATTERY_LEVELS.iter().enumerate() {
         let l = bl.load(Relaxed);
-        if l != 0xFF && l < min {
-            min = l;
+        if l == 0xFF {
+            continue;
+        }
+        let charging = CLASSIC_BATTERY_CHARGING[i].load(Relaxed);
+        let agg = if CLASSIC_BATTERY_IS_KEYBOARD[i].load(Relaxed) {
+            &mut keyboard
+        } else {
+            &mut pointer
+        };
+        if l < agg.0 {
+            *agg = (l, charging);
         }
     }
+    POINTER_BATTERY_LEVEL.store(pointer.0, Relaxed);
+    POINTER_BATTERY_CHARGING.store(pointer.1, Relaxed);
+    KEYBOARD_BATTERY_LEVEL.store(keyboard.0, Relaxed);
+    KEYBOARD_BATTERY_CHARGING.store(keyboard.1, Relaxed);
+    let min = pointer.0.min(keyboard.0);
     BATTERY_LEVEL.store(min, Relaxed);
     BATTERY_USB_SIGNAL.signal(min);
 }
@@ -86,16 +122,19 @@ pub fn clear_battery_level(slot: usize) {
     update_battery_level(slot, 0xFF);
 }
 
-/// Update a Classic BT link's battery level and refresh the aggregate.
-pub fn update_classic_battery_level(link: usize, level: u8) {
+/// Update a Classic BT link's battery (level, whether it charges, and whether
+/// the link is a keyboard) and refresh the aggregates.
+pub fn update_classic_battery(link: usize, level: u8, charging: bool, keyboard: bool) {
     use core::sync::atomic::Ordering::Relaxed;
+    CLASSIC_BATTERY_IS_KEYBOARD[link].store(keyboard, Relaxed);
+    CLASSIC_BATTERY_CHARGING[link].store(charging, Relaxed);
     CLASSIC_BATTERY_LEVELS[link].store(level, Relaxed);
     refresh_aggregate();
 }
 
 /// Clear a Classic BT link's battery level (on disconnect) and refresh.
 pub fn clear_classic_battery_level(link: usize) {
-    update_classic_battery_level(link, 0xFF);
+    update_classic_battery(link, 0xFF, false, false);
 }
 
 // ============ Per-slot parsed report layouts ============

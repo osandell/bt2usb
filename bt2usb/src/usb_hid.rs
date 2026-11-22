@@ -368,11 +368,83 @@ pub const MOUSE_HIRES_16BIT_REPORT_DESC: &[u8] = &[
     0x25, 0x64, //   Logical Maximum (100)
     0x75, 0x08, //   Report Size (8)
     0x95, 0x01, //   Report Count (1)
-    0x81, 0x02, //   Input (Data, Variable, Absolute) — pushed on BLE update
+    0x81, 0x02, //   Input (Data, Variable, Absolute), pushed on every change
     0x09, 0x65, //   Usage (Absolute State of Charge)
-    0xB1, 0x02, //   Feature (Data, Variable, Absolute) — GET_REPORT query
+    0xB1, 0x02, //   Feature (Data, Variable, Absolute), GET_REPORT query
+    // Charging bit: Linux (6.6+) makes it the power supply's
+    // Charging/Discharging status.
+    0x09, 0x44, //   Usage (Charging)
+    0x25, 0x01, //   Logical Maximum (1)
+    0x75, 0x01, //   Report Size (1)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+    0x75, 0x07, //   Report Size (7)
+    0x81, 0x01, //   Input (Constant), padding
     0xC0, // End Collection (Application, Background Controls)
 ];
+
+/// Keyboard extras interface (standard mode only): what a Classic keyboard
+/// has beyond the boot report, which stays on the boot keyboard interface.
+///
+/// Report ID 1, Consumer Control: one 16-bit usage (media keys). It also
+/// gives the interface an input device, without which Linux's hid-input
+/// tears the battery down again.
+/// Report ID 3, the keyboard's battery, laid out like the mouse interface's
+/// Report ID 2 (state of charge + charging bit). Its own interface, so the
+/// host creates a second power supply next to the pointing device's. Linux
+/// names a HID battery after the serial number and the report ID
+/// (`hid-<serial>-battery-<id>`), so a second ID 2 collides (EEXIST).
+pub const KEYBOARD_EXTRAS_REPORT_DESC: &[u8] = &[
+    0x05, 0x0C, // Usage Page (Consumer)
+    0x09, 0x01, // Usage (Consumer Control)
+    0xA1, 0x01, // Collection (Application)
+    0x85, 0x01, //   Report ID (1)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x26, 0xFF, 0x03, // Logical Maximum (0x3FF)
+    0x19, 0x00, //   Usage Minimum (0)
+    0x2A, 0xFF, 0x03, // Usage Maximum (0x3FF)
+    0x75, 0x10, //   Report Size (16)
+    0x95, 0x01, //   Report Count (1)
+    0x81, 0x00, //   Input (Data, Array, Absolute)
+    0xC0, // End Collection
+    0x05, 0x06, // Usage Page (Generic Device Controls)
+    0x09, 0x01, // Usage (Background Controls)
+    0xA1, 0x01, // Collection (Application)
+    0x85, 0x03, //   Report ID (3), not 2: see the doc comment
+    0x05, 0x85, //   Usage Page (Battery System)
+    0x09, 0x65, //   Usage (Absolute State of Charge)
+    0x15, 0x00, //   Logical Minimum (0)
+    0x25, 0x64, //   Logical Maximum (100)
+    0x75, 0x08, //   Report Size (8)
+    0x95, 0x01, //   Report Count (1)
+    0x81, 0x02, //   Input (Data, Variable, Absolute), pushed on every change
+    0x09, 0x65, //   Usage (Absolute State of Charge)
+    0xB1, 0x02, //   Feature (Data, Variable, Absolute), GET_REPORT query
+    // Charging bit: Linux (6.6+) makes it the power supply's
+    // Charging/Discharging status.
+    0x09, 0x44, //   Usage (Charging)
+    0x25, 0x01, //   Logical Maximum (1)
+    0x75, 0x01, //   Report Size (1)
+    0x81, 0x02, //   Input (Data, Variable, Absolute)
+    0x75, 0x07, //   Report Size (7)
+    0x81, 0x01, //   Input (Constant), padding
+    0xC0, // End Collection
+];
+
+/// GET_REPORT for the keyboard extras interface: the keyboard's battery (ID 3).
+pub struct KeyboardExtrasRequestHandler;
+
+impl RequestHandler for KeyboardExtrasRequestHandler {
+    fn get_report(&mut self, id: ReportId, buf: &mut [u8]) -> Option<usize> {
+        match id {
+            ReportId::Feature(3) if !buf.is_empty() => {
+                let level = crate::ble_hid::KEYBOARD_BATTERY_LEVEL.load(Ordering::Relaxed);
+                buf[0] = if level == 0xFF { 0 } else { level };
+                Some(1)
+            }
+            _ => None,
+        }
+    }
+}
 
 /// Mouse request handler with Resolution Multiplier Feature report support.
 ///
@@ -395,7 +467,7 @@ impl RequestHandler for HiresMouseRequestHandler {
             }
             ReportId::Feature(2) => {
                 // Battery level (0-100), or 0 if unknown
-                let level = crate::ble_hid::BATTERY_LEVEL.load(Ordering::Relaxed);
+                let level = crate::ble_hid::POINTER_BATTERY_LEVEL.load(Ordering::Relaxed);
                 buf[0] = if level == 0xFF { 0 } else { level };
                 Some(1)
             }
