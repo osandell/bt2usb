@@ -7,6 +7,7 @@
 //! Both share the same 16KB flash region (sequential-storage handles it).
 
 use core::ops::Range;
+use core::sync::atomic::{AtomicU32, Ordering};
 use defmt::{debug, error, info, warn};
 use embassy_rp::flash::{Async, Flash};
 use embassy_rp::peripherals::FLASH;
@@ -16,6 +17,25 @@ use sequential_storage::map::{
     fetch_item, remove_all_items, remove_item, store_item, SerializationError, Value,
 };
 use trouble_host::prelude::{BdAddr, BondInformation, Identity, LongTermKey, SecurityLevel};
+
+/// Bumped by every write to the bond region. The Classic task compares it
+/// against the value it last loaded at, so bonds and auto-connect flags
+/// changed over RPC take effect without a reboot, without rescanning flash
+/// on a timer (a full rescan stalls the Classic HCI loop for ~0.5 s, which
+/// freezes a connected trackpad's cursor).
+static BONDS_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+fn mark_bonds_changed() {
+    // No atomic RMW on Cortex-M0. Every writer holds `&mut Flash` (taken
+    // through the flash mutex), so writers never race each other here.
+    let next = BONDS_GENERATION.load(Ordering::Relaxed).wrapping_add(1);
+    BONDS_GENERATION.store(next, Ordering::Relaxed);
+}
+
+/// Current bond generation, see `BONDS_GENERATION`.
+pub fn bonds_generation() -> u32 {
+    BONDS_GENERATION.load(Ordering::Relaxed)
+}
 
 /// Maximum number of bonded devices we support
 pub const MAX_BONDS: usize = 10;
@@ -205,6 +225,7 @@ pub async fn store_bond(
     device_name: &[u8; 32],
     device_name_len: u8,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     // Find an empty slot or reuse slot with same address
@@ -290,6 +311,7 @@ pub async fn store_bond(
 pub async fn clear_all_bonds(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
 ) -> Result<(), ()> {
+    mark_bonds_changed();
     info!("Clearing all bonds from flash...");
     let mut buffer = [0u8; 128];
 
@@ -312,6 +334,7 @@ pub async fn update_bond_profile(
     address: &[u8; 6],
     new_profile_id: u8,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     // Find bond with matching address
@@ -372,6 +395,7 @@ pub async fn update_auto_connect(
     address: &[u8; 6],
     enabled: bool,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     for slot in 0..MAX_BONDS as u8 {
@@ -425,6 +449,7 @@ pub async fn clear_bond_by_address(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     address: &[u8; 6],
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     for slot in 0..MAX_BONDS as u8 {
@@ -597,6 +622,7 @@ pub async fn store_classic_bond(
     device_name: &[u8; 32],
     device_name_len: u8,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
     let mut target_slot: Option<u8> = None;
     let mut preserved_name: Option<([u8; 32], u8)> = None;
@@ -684,6 +710,7 @@ pub async fn store_classic_bond(
 pub async fn clear_all_classic_bonds(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
 ) -> Result<(), ()> {
+    mark_bonds_changed();
     info!("Clearing all Classic bonds from flash...");
     let mut buffer = [0u8; 128];
     let mut cleared = 0u8;
@@ -720,6 +747,7 @@ pub async fn update_classic_bond_profile(
     address: &[u8; 6],
     new_profile_id: u8,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     for i in 0..MAX_CLASSIC_BONDS as u8 {
@@ -777,6 +805,7 @@ pub async fn update_classic_auto_connect(
     address: &[u8; 6],
     enabled: bool,
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     for i in 0..MAX_CLASSIC_BONDS as u8 {
@@ -833,6 +862,7 @@ pub async fn clear_classic_bond_by_address(
     flash: &mut Flash<'_, FLASH, Async, { 2 * 1024 * 1024 }>,
     address: &[u8; 6],
 ) -> Result<u8, ()> {
+    mark_bonds_changed();
     let mut buffer = [0u8; 128];
 
     for i in 0..MAX_CLASSIC_BONDS as u8 {

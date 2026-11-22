@@ -415,10 +415,6 @@ const MAX_MANUAL_ATTEMPTS: u8 = 3;
 /// Poll MT2 battery this often (matches hid-magicmouse.c USB_BATTERY_TIMEOUT_SEC).
 const BATTERY_POLL_TICKS: u32 = 60;
 
-/// Re-read auto-connect bonds from flash this often, so bonds and
-/// auto-connect flags changed over RPC take effect without a reboot.
-const BOND_REFRESH_TICKS: u32 = 10;
-
 fn retry_delay(failures: u8) -> Duration {
     if failures < 5 {
         Duration::from_secs(5)
@@ -853,6 +849,7 @@ where
     let mut requested: Option<([u8; 6], u8)> = None;
     let mut inquiry_active = false;
     let mut scan_requested = false;
+    let mut bonds_generation = bonding::bonds_generation();
     let mut auto_bonds = load_auto_connect_bonds(flash_mutex).await;
     let mut backoff: heapless::Vec<Backoff, { bonding::MAX_CLASSIC_BONDS }> = heapless::Vec::new();
     let mut ticker = Ticker::every(Duration::from_secs(1));
@@ -1352,7 +1349,13 @@ where
                     }
                 }
 
-                if ticks % BOND_REFRESH_TICKS == 0 {
+                // Re-read auto-connect bonds only when something wrote the
+                // bond region (RPC, pairing). Rescanning flash on a timer
+                // stalled this loop ~0.5 s every 10 s, and the trackpad's
+                // cursor froze and then jumped each time.
+                let generation = bonding::bonds_generation();
+                if generation != bonds_generation {
+                    bonds_generation = generation;
                     auto_bonds = load_auto_connect_bonds(flash_mutex).await;
                 }
             }
